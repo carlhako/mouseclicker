@@ -14,6 +14,7 @@ Features:
   * The loop auto-stops if the mouse is moved more than 50 px from the target.
   * "Stop" halts both the start countdown and the click loop.
   * "Always on top" checkbox keeps the window above other windows.
+  * The 5-second countdown is shown inside the main GUI window (no popup).
 """
 
 import json
@@ -73,8 +74,9 @@ class MouseClicker:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Mouse Clicker")
-        self.root.geometry("380x360")
-        self.root.resizable(False, False)
+        self.root.geometry("380x440")
+        self.root.minsize(380, 360)
+        self.root.resizable(True, True)
 
         # --- state ---
         self.click_x = tk.IntVar(value=0)
@@ -156,8 +158,37 @@ class MouseClicker:
             validatecommand=vcmd,
         ).pack(anchor="w", pady=(4, 0))
 
-        # Controls
+        # --- Countdown panel ---
+        # Built here but only packed into the layout while a countdown is
+        # actually running. Plain tk (not ttk) so we can guarantee the
+        # yellow background renders on every theme.
+        self._countdown_frame = tk.Frame(
+            self.root, bg="#fff3cd", bd=1, relief="solid"
+        )
+        self._countdown_msg = tk.StringVar(value="")
+        tk.Label(
+            self._countdown_frame,
+            textvariable=self._countdown_msg,
+            bg="#fff3cd",
+            fg="#000000",
+            font=("Segoe UI", 10),
+            padx=6,
+            pady=2,
+        ).pack(fill="x")
+        self._countdown_num = tk.StringVar(value=str(COUNTDOWN_SECONDS))
+        tk.Label(
+            self._countdown_frame,
+            textvariable=self._countdown_num,
+            bg="#fff3cd",
+            fg="#cc6600",
+            font=("Segoe UI", 44, "bold"),
+            padx=6,
+        ).pack(fill="x")
+
+        # Controls (kept as a reference so we can pack the countdown
+        # panel *before* this row when the countdown starts).
         ctrl = ttk.Frame(self.root, padding=(10, 0, 10, 0))
+        self._ctrl_frame = ctrl
         ctrl.pack(fill="x")
         self.start_btn = ttk.Button(
             ctrl, text="▶  Start", command=self._start_clicking, width=12
@@ -205,17 +236,23 @@ class MouseClicker:
 
     def _set_position_countdown(self) -> None:
         try:
+            self.root.after(0, lambda: self._show_countdown_ui("Move mouse to target"))
+            time.sleep(0.15)  # let the countdown panel appear
             for i in range(COUNTDOWN_SECONDS, 0, -1):
                 if self.stop_requested:
+                    self.root.after(0, self._hide_countdown_ui)
                     self._set_status("Position capture cancelled.")
                     return
+                self.root.after(0, lambda n=i: self._update_countdown_ui(n))
                 self._set_status(f"Move mouse to position… capturing in {i}s")
                 time.sleep(1)
+            self.root.after(0, self._hide_countdown_ui)
             x, y = pyautogui.position()
             self.click_x.set(x)
             self.click_y.set(y)
             self._set_status(f"Position captured: ({x}, {y})")
         except Exception as e:
+            self.root.after(0, self._hide_countdown_ui)
             self._set_status(f"Error: {e}")
         finally:
             self.busy = False
@@ -313,41 +350,70 @@ class MouseClicker:
     def _countdown_then_click(self, x: int, y: int, cps: float) -> None:
         try:
             # --- 5 s start countdown ---
+            self.root.after(
+                0,
+                lambda: self._show_countdown_ui(
+                    "Get ready — press Stop to cancel"
+                ),
+            )
+            time.sleep(0.15)  # let the countdown panel appear
             for i in range(COUNTDOWN_SECONDS, 0, -1):
                 if self.stop_requested:
+                    self.root.after(0, self._hide_countdown_ui)
                     self._set_status("Start cancelled.")
                     return
+                self.root.after(0, lambda n=i: self._update_countdown_ui(n))
                 self._set_status(f"Starting in {i}s — press Stop to cancel")
                 time.sleep(1)
             if self.stop_requested:
+                self.root.after(0, self._hide_countdown_ui)
                 self._set_status("Start cancelled.")
                 return
+            self.root.after(0, self._hide_countdown_ui)
 
             # --- infinite click loop ---
             self.running = True
             interval = 1.0 / cps
+            click_count = 0
             self._set_status(
-                f"Clicking at ({x}, {y}) @ {cps} cps — move mouse >{STOP_DISTANCE}px to stop"
+                f"Clicking at ({x}, {y}) @ {cps} cps — "
+                f"move mouse >{STOP_DISTANCE}px to stop"
             )
 
             while not self.stop_requested:
-                # Detect user movement BEFORE we move the mouse back
-                cx, cy = pyautogui.position()
-                dist = ((cx - x) ** 2 + (cy - y) ** 2) ** 0.5
-                if dist > STOP_DISTANCE:
-                    self._set_status(
-                        f"Stopped — mouse moved {dist:.0f} px from target"
-                    )
+                # Click FIRST so pyautogui moves the mouse back to the target.
+                # If we checked distance before the first click, the cursor
+                # would still be parked on the Start button and the loop
+                # would auto-stop immediately on iteration 1.
+                try:
+                    pyautogui.click(x, y, button="left")
+                    click_count += 1
+                except Exception as click_err:
+                    self._set_status(f"Click error: {click_err}")
                     return
 
-                pyautogui.click(x, y, button="left")
-
-                # Sleep in small slices so Stop stays responsive
+                # Sleep in small slices; on every slice, check whether the
+                # user has dragged the mouse away from the target.
                 slept = 0.0
                 while slept < interval and not self.stop_requested:
                     time.sleep(min(POLL_INTERVAL, interval - slept))
                     slept += POLL_INTERVAL
+                    try:
+                        cx, cy = pyautogui.position()
+                        dist = ((cx - x) ** 2 + (cy - y) ** 2) ** 0.5
+                        if dist > STOP_DISTANCE:
+                            self._set_status(
+                                f"Stopped — mouse moved {dist:.0f} px "
+                                f"from target ({click_count} clicks)"
+                            )
+                            self.stop_requested = True
+                            break
+                    except Exception:
+                        # Position polling is best-effort; never let it
+                        # kill the click loop on its own.
+                        pass
         except Exception as e:
+            self.root.after(0, self._hide_countdown_ui)
             self._set_status(f"Error: {e}")
         finally:
             self.running = False
@@ -372,6 +438,29 @@ class MouseClicker:
 
     def _set_status(self, msg: str) -> None:
         self.root.after(0, lambda: self.status_var.set(msg))
+
+    # ------------------------------------------------- In-GUI countdown
+    def _show_countdown_ui(self, message: str) -> None:
+        """Show the in-GUI countdown panel. Must run on the Tk thread."""
+        self._countdown_msg.set(message)
+        self._countdown_num.set(str(COUNTDOWN_SECONDS))
+        if not self._countdown_frame.winfo_ismapped():
+            # Insert above the Start/Stop buttons so it pushes them down
+            # and is right where the user is looking.
+            self._countdown_frame.pack(
+                fill="x", padx=10, pady=(0, 6), before=self._ctrl_frame
+            )
+            self.root.update_idletasks()
+
+    def _update_countdown_ui(self, n: int) -> None:
+        """Update the big countdown number. Main thread only."""
+        self._countdown_num.set(str(n))
+
+    def _hide_countdown_ui(self) -> None:
+        """Hide the countdown panel. Main thread only."""
+        if self._countdown_frame.winfo_ismapped():
+            self._countdown_frame.pack_forget()
+            self.root.update_idletasks()
 
     def _on_close(self) -> None:
         if self.busy:
