@@ -33,13 +33,24 @@ pip install -r requirements.txt
 
 ## Usage
 
-```bash
+**Windows 11 / 10** — double-click `mouseclicker.pyw`, or:
+
+```cmd
+pythonw mouseclicker.pyw
+```
+
+The `.pyw` launcher uses `pythonw.exe`, so no console window pops up.
+The plain `mouseclicker.py` still works if you prefer running from a terminal:
+
+```cmd
 python mouseclicker.py
 ```
 
-Or on macOS / Linux:
+**macOS / Linux**
 
 ```bash
+python mouseclicker.py
+# or
 ./mouseclicker.py
 ```
 
@@ -69,7 +80,12 @@ without using the capture button.
 
 ## Platform notes
 
-- **Windows** — works out of the box.
+- **Windows 11 / 10** — works out of the box. The script enables per-monitor
+  DPI awareness (`SetProcessDpiAwareness(2)`) and sets an
+  `AppUserModelID` so the GUI renders crisply at 125%/150% display scaling
+  and groups correctly under one taskbar entry. The modern `vista` ttk theme
+  is selected automatically. Double-click `mouseclicker.pyw` to launch
+  without a console window.
 - **macOS** — you may need to grant Accessibility / Input Monitoring
   permissions to your terminal / Python for mouse control to work.
 - **Linux** — requires an X11 session (Wayland is not supported by `pyautogui`).
