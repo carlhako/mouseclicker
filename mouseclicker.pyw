@@ -6,12 +6,17 @@ Features:
   * "Set Mouse Position" with a 5-second countdown so you can move the mouse
     where you want it before the position is captured.
   * X/Y coordinates are editable in the GUI.
-  * "Save Position" persists X, Y and click-speed to a JSON config file that
-    is reloaded automatically on startup.
+  * "Save Position" persists X, Y, click-speed and the delay settings to a
+    JSON config file that is reloaded automatically on startup.
   * Click speed: 0.1 - 10 clicks per second (0.1 = 1 click every 10 s).
+  * Delay feature: optionally insert a configurable pause between every
+    click, and (separately) optionally repeat that pause once every N
+    seconds. Both sub-features are independent of each other and of the
+    normal CPS rate.
   * "Start" runs another 5-second countdown (cancellable) then clicks the
     primary mouse button in an infinite loop at the saved position.
   * The loop auto-stops if the mouse is moved more than 50 px from the target.
+    The auto-stop also fires during the delay / repeat pauses.
   * "Stop" halts both the start countdown and the click loop.
   * "Always on top" checkbox keeps the window above other windows.
   * The 5-second countdown is shown inside the main GUI window (no popup).
@@ -74,8 +79,8 @@ class MouseClicker:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Mouse Clicker")
-        self.root.geometry("380x440")
-        self.root.minsize(380, 360)
+        self.root.geometry("380x560")
+        self.root.minsize(380, 480)
         self.root.resizable(True, True)
 
         # --- state ---
@@ -84,6 +89,16 @@ class MouseClicker:
         self.cps = tk.DoubleVar(value=1.0)
         self.always_on_top = tk.BooleanVar(value=False)
         self.click_count_var = tk.StringVar(value="Clicks: 0")
+
+        # --- delay feature ---
+        # delay_enabled: when True, an extra pause of `delay_value` seconds
+        #   is added between every click (on top of the 1/cps interval).
+        # repeat_enabled: when True, every `repeat_value` seconds the
+        #   clicking pauses for `delay_value` seconds.
+        self.delay_enabled = tk.BooleanVar(value=False)
+        self.delay_value = tk.DoubleVar(value=1.0)
+        self.repeat_enabled = tk.BooleanVar(value=False)
+        self.repeat_value = tk.DoubleVar(value=5.0)
 
         self.busy = False  # True while counting down or clicking
         self.running = False  # True only while actively clicking
@@ -158,6 +173,53 @@ class MouseClicker:
             validate="key",
             validatecommand=vcmd,
         ).pack(anchor="w", pady=(4, 0))
+
+        # Divider between Click Speed and the Delay feature
+        ttk.Separator(self.root, orient="horizontal").pack(
+            fill="x", padx=10, pady=(0, 8)
+        )
+
+        # Delay section
+        delay_frame = ttk.LabelFrame(self.root, text="Delay", padding=10)
+        delay_frame.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Checkbutton(
+            delay_frame,
+            text="Enable delay between clicks",
+            variable=self.delay_enabled,
+        ).pack(anchor="w")
+
+        delay_row = ttk.Frame(delay_frame)
+        delay_row.pack(fill="x", anchor="w", pady=(4, 0))
+        ttk.Label(delay_row, text="Delay (seconds):").pack(side="left")
+        delay_vcmd = (self.root.register(self._validate_delay_input), "%P")
+        ttk.Entry(
+            delay_row,
+            textvariable=self.delay_value,
+            width=10,
+            validate="key",
+            validatecommand=delay_vcmd,
+        ).pack(side="left", padx=(6, 0))
+
+        ttk.Checkbutton(
+            delay_frame,
+            text="Repeat delay periodically",
+            variable=self.repeat_enabled,
+        ).pack(anchor="w", pady=(8, 0))
+
+        repeat_row = ttk.Frame(delay_frame)
+        repeat_row.pack(fill="x", anchor="w", pady=(4, 0))
+        ttk.Label(repeat_row, text="Repeat every (seconds):").pack(side="left")
+        repeat_vcmd = (
+            self.root.register(self._validate_repeat_input),
+            "%P",
+        )
+        ttk.Entry(
+            repeat_row,
+            textvariable=self.repeat_value,
+            width=10,
+            validate="key",
+            validatecommand=repeat_vcmd,
+        ).pack(side="left", padx=(6, 0))
 
         # Statistics section (shows live click count while running)
         stats = ttk.LabelFrame(self.root, text="Statistics", padding=10)
@@ -282,7 +344,24 @@ class MouseClicker:
                 "Invalid input", "Click speed must be a number between 0.1 and 10."
             )
             return
-        config = {"x": x, "y": y, "cps": cps}
+        # Persist delay settings too. If the user hasn't enabled them
+        # or hasn't entered a valid value yet, we still save the last
+        # typed value so their state is restored on next launch.
+        delay = self._get_delay_value()
+        if delay is None:
+            delay = float(self.delay_value.get()) if self.delay_value.get() else 0.0
+        repeat = self._get_repeat_value()
+        if repeat is None:
+            repeat = float(self.repeat_value.get()) if self.repeat_value.get() else 5.0
+        config = {
+            "x": x,
+            "y": y,
+            "cps": cps,
+            "delay_enabled": bool(self.delay_enabled.get()),
+            "delay": delay,
+            "repeat_enabled": bool(self.repeat_enabled.get()),
+            "repeat": repeat,
+        }
         try:
             with open(CONFIG_FILE, "w") as f:
                 json.dump(config, f, indent=2)
@@ -301,6 +380,17 @@ class MouseClicker:
             cps = float(config.get("cps", 1.0))
             cps = max(0.1, min(10.0, cps))
             self.cps.set(cps)
+            # Delay settings are optional in the config so that old
+            # config files (written before the Delay feature existed)
+            # still load cleanly.
+            self.delay_enabled.set(bool(config.get("delay_enabled", False)))
+            delay = float(config.get("delay", 1.0))
+            delay = max(0.0, min(3600.0, delay))
+            self.delay_value.set(delay)
+            self.repeat_enabled.set(bool(config.get("repeat_enabled", False)))
+            repeat = float(config.get("repeat", 5.0))
+            repeat = max(0.1, min(3600.0, repeat))
+            self.repeat_value.set(repeat)
             self._set_status(f"Loaded config from {CONFIG_FILE}")
         except (OSError, ValueError, json.JSONDecodeError) as e:
             self._set_status(f"Could not load config: {e}")
@@ -341,6 +431,60 @@ class MouseClicker:
             return None
         return v
 
+    # --- delay validation / getters ---
+    # Permissive key-stroke validator: allow the user to type partial
+    # values like "0", "0.", "1.5" without being blocked. The final
+    # value is checked in _get_delay_value() when Start is pressed.
+    # Allowed range while typing: 0 - 3600 (0 = no extra delay).
+    def _validate_delay_input(self, proposed: str) -> bool:
+        if proposed == "" or proposed == ".":
+            return True
+        if any(c not in "0123456789." for c in proposed):
+            return False
+        if proposed.count(".") > 1:
+            return False
+        try:
+            v = float(proposed)
+        except ValueError:
+            return False
+        return 0.0 <= v <= 3600.0
+
+    def _get_delay_value(self):
+        try:
+            v = float(self.delay_value.get())
+        except (ValueError, tk.TclError):
+            return None
+        if not (0.0 <= v <= 3600.0):
+            return None
+        return v
+
+    # --- repeat validation / getters ---
+    # Permissive key-stroke validator (see _validate_cps_input for the
+    # rationale). Allowed range while typing: 0.1 - 3600 seconds. We
+    # require at least 0.1 so the periodic pause can never become a
+    # busy-loop if the user types 0.
+    def _validate_repeat_input(self, proposed: str) -> bool:
+        if proposed == "" or proposed == ".":
+            return True
+        if any(c not in "0123456789." for c in proposed):
+            return False
+        if proposed.count(".") > 1:
+            return False
+        try:
+            v = float(proposed)
+        except ValueError:
+            return False
+        return 0.0 <= v <= 3600.0
+
+    def _get_repeat_value(self):
+        try:
+            v = float(self.repeat_value.get())
+        except (ValueError, tk.TclError):
+            return None
+        if not (0.1 <= v <= 3600.0):
+            return None
+        return v
+
     # ------------------------------------------------- Click loop
     def _start_clicking(self) -> None:
         if self.busy:
@@ -365,17 +509,49 @@ class MouseClicker:
             messagebox.showerror("Invalid position", "X and Y must be integers.")
             return
 
+        # Validate the delay inputs only if the corresponding feature
+        # is enabled. The repeat checkbox consumes the same *delay*
+        # value, so we need to validate it whenever either feature is
+        # on — even if "Enable delay between clicks" is off but
+        # "Repeat delay periodically" is on.
+        delay = 0.0
+        if self.delay_enabled.get() or self.repeat_enabled.get():
+            delay = self._get_delay_value()
+            if delay is None:
+                messagebox.showerror(
+                    "Invalid delay",
+                    "Delay must be a number between 0 and 3600 seconds.",
+                )
+                return
+        repeat = 0.0
+        if self.repeat_enabled.get():
+            repeat = self._get_repeat_value()
+            if repeat is None:
+                messagebox.showerror(
+                    "Invalid repeat interval",
+                    "Repeat interval must be a number between 0.1 and 3600 "
+                    "seconds.",
+                )
+                return
+
         self.busy = True
         self.stop_requested = False
         self.click_count_var.set("Clicks: 0")
         self._update_buttons()
         threading.Thread(
             target=self._countdown_then_click,
-            args=(x, y, cps),
+            args=(x, y, cps, delay, repeat),
             daemon=True,
         ).start()
 
-    def _countdown_then_click(self, x: int, y: int, cps: float) -> None:
+    def _countdown_then_click(
+        self,
+        x: int,
+        y: int,
+        cps: float,
+        delay: float = 0.0,
+        repeat: float = 0.0,
+    ) -> None:
         try:
             # --- 5 s start countdown ---
             self.root.after(
@@ -403,6 +579,17 @@ class MouseClicker:
             self.running = True
             interval = 1.0 / cps
             click_count = 0
+            # Snapshot the live "is the delay feature active?" booleans
+            # once at the start of the run so the loop doesn't have to
+            # re-read Tk variables on every iteration (and so a user
+            # toggling the checkbox mid-run doesn't change behavior
+            # mid-click in a confusing way).
+            delay_on = bool(self.delay_enabled.get())
+            repeat_on = bool(self.repeat_enabled.get())
+            # The repeat pause is measured from the start of the run
+            # (or from the end of the last periodic pause). This makes
+            # the timing predictable: "every N seconds, pause once".
+            last_repeat_time = time.time()
             self._set_status(
                 f"Clicking at ({x}, {y}) @ {cps} cps — "
                 f"move mouse >{STOP_DISTANCE}px to stop"
@@ -444,26 +631,34 @@ class MouseClicker:
                     self._set_status(f"Click error: {click_err}")
                     return
 
-                # Sleep in small slices; on every slice, check whether the
-                # user has dragged the mouse away from the target.
-                slept = 0.0
-                while slept < interval and not self.stop_requested:
-                    time.sleep(min(POLL_INTERVAL, interval - slept))
-                    slept += POLL_INTERVAL
-                    try:
-                        cx, cy = pyautogui.position()
-                        dist = ((cx - x) ** 2 + (cy - y) ** 2) ** 0.5
-                        if dist > STOP_DISTANCE:
-                            self._set_status(
-                                f"Stopped — mouse moved {dist:.0f} px "
-                                f"from target ({click_count} clicks)"
-                            )
-                            self.stop_requested = True
-                            break
-                    except Exception:
-                        # Position polling is best-effort; never let it
-                        # kill the click loop on its own.
-                        pass
+                # Sleep for the normal CPS interval. _interruptible_sleep
+                # returns False if the user clicked Stop OR if the
+                # mouse drifted too far from the target.
+                if not self._interruptible_sleep(interval, x, y, click_count):
+                    return
+
+                # Extra pause between every click when the delay
+                # feature is on. delay==0 (the feature being on but
+                # the value being 0) is treated as a no-op.
+                if delay_on and delay > 0 and not self.stop_requested:
+                    if not self._interruptible_sleep(delay, x, y, click_count):
+                        return
+
+                # Periodic longer pause: every `repeat` seconds, the
+                # clicking pauses for `delay` seconds. Measured from
+                # the start of the run / end of the last periodic
+                # pause, so the timing is "once every N seconds"
+                # rather than "N seconds after the last click".
+                if repeat_on and repeat > 0 and delay > 0 and not self.stop_requested:
+                    if time.time() - last_repeat_time >= repeat:
+                        self._set_status(
+                            f"Pausing for {delay:g}s (repeat)…"
+                        )
+                        if not self._interruptible_sleep(
+                            delay, x, y, click_count
+                        ):
+                            return
+                        last_repeat_time = time.time()
         except Exception as e:
             self.root.after(0, self._hide_countdown_ui)
             self._set_status(f"Error: {e}")
@@ -478,6 +673,44 @@ class MouseClicker:
             return
         self.stop_requested = True
         self._set_status("Stopping…")
+
+    # ------------------------------------------------- Interruptible sleep
+    def _interruptible_sleep(
+        self, total: float, x: int, y: int, click_count: int
+    ) -> bool:
+        """Sleep for `total` seconds in small slices.
+
+        On every slice, polls the current mouse position and trips the
+        stop condition if the cursor has moved more than STOP_DISTANCE
+        pixels from the target — the same auto-stop the main click
+        loop uses. This means delay / repeat pauses are also
+        cancellable by the user moving the mouse away.
+
+        Returns True if the full sleep completed, False if it was cut
+        short (either by Stop being pressed, or by the auto-stop).
+        Either way the helper updates the status bar and sets
+        `self.stop_requested = True` when it returns False.
+        """
+        slept = 0.0
+        while slept < total and not self.stop_requested:
+            slice_t = min(POLL_INTERVAL, total - slept)
+            time.sleep(slice_t)
+            slept += slice_t
+            try:
+                cx, cy = pyautogui.position()
+                dist = ((cx - x) ** 2 + (cy - y) ** 2) ** 0.5
+                if dist > STOP_DISTANCE:
+                    self._set_status(
+                        f"Stopped — mouse moved {dist:.0f} px "
+                        f"from target ({click_count} clicks)"
+                    )
+                    self.stop_requested = True
+                    return False
+            except Exception:
+                # Position polling is best-effort; never let it kill
+                # the click loop on its own.
+                pass
+        return not self.stop_requested
 
     # ------------------------------------------------- Helpers
     def _update_buttons(self) -> None:
