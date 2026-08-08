@@ -9,15 +9,15 @@ Features:
   * "Save Position" persists X, Y, click-speed and the delay settings to a
     JSON config file that is reloaded automatically on startup.
   * Click speed: 0.1 - 10 clicks per second (0.1 = 1 click every 10 s).
-  * Delay feature: optionally insert a one-time initial pause after the
-    first click before the normal CPS cadence kicks in, and (separately)
-    optionally repeat that same pause once every N seconds. Both
+  * Click-hold feature: optionally hold the initial click for a configurable
+    duration before the normal CPS cadence starts, and (separately)
+    optionally repeat that held click once every N seconds. Both
     sub-features are independent of each other and of the normal CPS
     rate.
   * "Start" runs another 5-second countdown (cancellable) then clicks the
     primary mouse button in an infinite loop at the saved position.
   * The loop auto-stops if the mouse is moved more than 50 px from the target.
-    The auto-stop also fires during the delay / repeat pauses.
+    The auto-stop also fires while a click is being held or repeated.
   * "Stop" halts both the start countdown and the click loop.
   * "Always on top" checkbox keeps the window above other windows.
   * The 5-second countdown is shown inside the main GUI window (no popup).
@@ -91,13 +91,12 @@ class MouseClicker:
         self.always_on_top = tk.BooleanVar(value=False)
         self.click_count_var = tk.StringVar(value="Clicks: 0")
 
-        # --- delay feature ---
-        # delay_enabled: when True, the clicker does ONE click, then
-        #   pauses for `delay_value` seconds, and only THEN starts
-        #   clicking at the normal CPS rate. The delay is a one-time
-        #   initial pause, not a pause between every click.
+        # --- click-hold feature ---
+        # delay_enabled: when True, the first click is held for
+        #   `delay_value` seconds before normal CPS clicking begins.
         # repeat_enabled: when True, every `repeat_value` seconds the
-        #   clicking pauses for `delay_value` seconds.
+        #   click is held for `delay_value` seconds and then clicking
+        #   resumes at the normal CPS cadence.
         self.delay_enabled = tk.BooleanVar(value=False)
         self.delay_value = tk.DoubleVar(value=1.0)
         self.repeat_enabled = tk.BooleanVar(value=False)
@@ -177,23 +176,23 @@ class MouseClicker:
             validatecommand=vcmd,
         ).pack(anchor="w", pady=(4, 0))
 
-        # Divider between Click Speed and the Delay feature
+        # Divider between Click Speed and the Click Hold feature
         ttk.Separator(self.root, orient="horizontal").pack(
             fill="x", padx=10, pady=(0, 8)
         )
 
-        # Delay section
-        delay_frame = ttk.LabelFrame(self.root, text="Delay", padding=10)
+        # Click Hold section
+        delay_frame = ttk.LabelFrame(self.root, text="Click Hold", padding=10)
         delay_frame.pack(fill="x", padx=10, pady=(0, 8))
         ttk.Checkbutton(
             delay_frame,
-            text="Enable initial click delay",
+            text="Enable initial click hold",
             variable=self.delay_enabled,
         ).pack(anchor="w")
 
         delay_row = ttk.Frame(delay_frame)
         delay_row.pack(fill="x", anchor="w", pady=(4, 0))
-        ttk.Label(delay_row, text="Initial click delay (seconds):").pack(side="left")
+        ttk.Label(delay_row, text="Hold duration (seconds):").pack(side="left")
         delay_vcmd = (self.root.register(self._validate_delay_input), "%P")
         ttk.Entry(
             delay_row,
@@ -205,7 +204,7 @@ class MouseClicker:
 
         ttk.Checkbutton(
             delay_frame,
-            text="Repeat delay periodically",
+            text="Repeat click hold periodically",
             variable=self.repeat_enabled,
         ).pack(anchor="w", pady=(8, 0))
 
@@ -434,11 +433,11 @@ class MouseClicker:
             return None
         return v
 
-    # --- delay validation / getters ---
+    # --- click-hold duration validation / getters ---
     # Permissive key-stroke validator: allow the user to type partial
     # values like "0", "0.", "1.5" without being blocked. The final
     # value is checked in _get_delay_value() when Start is pressed.
-    # Allowed range while typing: 0 - 3600 (0 = no extra delay).
+    # Allowed range while typing: 0 - 3600 (0 = an instantaneous click).
     def _validate_delay_input(self, proposed: str) -> bool:
         if proposed == "" or proposed == ".":
             return True
@@ -461,10 +460,10 @@ class MouseClicker:
             return None
         return v
 
-    # --- repeat validation / getters ---
+    # --- repeat interval validation / getters ---
     # Permissive key-stroke validator (see _validate_cps_input for the
     # rationale). Allowed range while typing: 0.1 - 3600 seconds. We
-    # require at least 0.1 so the periodic pause can never become a
+    # require at least 0.1 so the periodic hold can never become a
     # busy-loop if the user types 0.
     def _validate_repeat_input(self, proposed: str) -> bool:
         if proposed == "" or proposed == ".":
@@ -512,18 +511,18 @@ class MouseClicker:
             messagebox.showerror("Invalid position", "X and Y must be integers.")
             return
 
-        # Validate the delay inputs only if the corresponding feature
-        # is enabled. The repeat checkbox consumes the same *delay*
-        # value, so we need to validate it whenever either feature is
-        # on — even if "Enable initial click delay" is off but
-        # "Repeat delay periodically" is on.
+        # Validate the click-hold inputs only if the corresponding feature
+        # is enabled. The repeat checkbox uses the same hold-duration
+        # value, so validate it whenever either feature is on — even if
+        # "Enable initial click hold" is off but "Repeat click hold
+        # periodically" is on.
         delay = 0.0
         if self.delay_enabled.get() or self.repeat_enabled.get():
             delay = self._get_delay_value()
             if delay is None:
                 messagebox.showerror(
-                    "Invalid initial click delay",
-                    "Initial click delay must be a number between 0 and 3600 "
+                    "Invalid click-hold duration",
+                    "Hold duration must be a number between 0 and 3600 "
                     "seconds.",
                 )
                 return
@@ -583,22 +582,17 @@ class MouseClicker:
             self.running = True
             interval = 1.0 / cps
             click_count = 0
-            # Snapshot the live "is the delay feature active?" booleans
-            # once at the start of the run so the loop doesn't have to
-            # re-read Tk variables on every iteration (and so a user
-            # toggling the checkbox mid-run doesn't change behavior
-            # mid-click in a confusing way).
+            # Snapshot whether the click-hold features are active once at
+            # the start of the run so toggling a checkbox mid-run does not
+            # change behavior in the middle of a click.
             delay_on = bool(self.delay_enabled.get())
             repeat_on = bool(self.repeat_enabled.get())
-            # The initial click delay is a one-time pause that fires
-            # immediately after the FIRST click, before the loop
-            # settles into the normal CPS cadence. After it has fired
-            # once, this flag stays True for the rest of the run so we
-            # never re-insert the delay between subsequent clicks.
-            initial_delay_done = False
-            # The repeat pause is measured from the start of the run
-            # (or from the end of the last periodic pause). This makes
-            # the timing predictable: "every N seconds, pause once".
+            # The initial hold happens only once, on the first click. After
+            # it completes, subsequent clicks use the normal CPS cadence.
+            initial_hold_done = False
+            # Repeat timing is measured from the start of the run (or from
+            # the end of the last repeated hold), making "every N seconds"
+            # predictable.
             last_repeat_time = time.time()
             self._set_status(
                 f"Clicking at ({x}, {y}) @ {cps} cps — "
@@ -615,70 +609,64 @@ class MouseClicker:
                 return
 
             while not self.stop_requested:
-                # Move + click FIRST so the cursor is parked on the
-                # target before any distance check below. If we
-                # checked distance first, the cursor would still be
-                # wherever the user last left it (e.g. on the Stop
-                # button) and the loop would auto-stop on iteration 1.
-                # Splitting moveTo() and click() (instead of just
-                # click(x, y)) makes it explicit that the cursor is
-                # moved to the target on every iteration.
-                try:
-                    pyautogui.moveTo(x, y)
-                    pyautogui.click()
+                # The initial click can be held for the configured duration.
+                # A zero duration falls back to a normal instantaneous click.
+                hold_duration = (
+                    delay if delay_on and not initial_hold_done else 0.0
+                )
+                if not self._perform_click(
+                    x, y, hold_duration, click_count + 1
+                ):
+                    return
+
+                click_count += 1
+                # Update the on-screen counter on the main thread. The
+                # default argument freezes the current count in the lambda.
+                self.root.after(
+                    0,
+                    lambda c=click_count: self.click_count_var.set(
+                        f"Clicks: {c}"
+                    ),
+                )
+                if delay_on and not initial_hold_done:
+                    initial_hold_done = True
+
+                # Sleep for the normal CPS interval. This keeps the regular
+                # click cadence after the initial held click is released.
+                if not self._interruptible_sleep(interval, x, y, click_count):
+                    return
+
+                # Repeat the held click every `repeat` seconds. The repeat
+                # feature is independent of the initial-hold checkbox and
+                # uses the same hold duration. Once the held click is
+                # released, wait one normal CPS interval before the next
+                # regular click.
+                if (
+                    repeat_on
+                    and repeat > 0
+                    and delay > 0
+                    and not self.stop_requested
+                    and time.time() - last_repeat_time >= repeat
+                ):
+                    self._set_status(
+                        f"Holding click for {delay:g}s (repeat)…"
+                    )
+                    if not self._perform_click(
+                        x, y, delay, click_count + 1
+                    ):
+                        return
                     click_count += 1
-                    # Update the on-screen counter on the main thread.
-                    # The default-argument trick freezes the current
-                    # click_count into the lambda — without it, every
-                    # queued callback would see the loop's final value.
                     self.root.after(
                         0,
                         lambda c=click_count: self.click_count_var.set(
                             f"Clicks: {c}"
                         ),
                     )
-                except Exception as click_err:
-                    self._set_status(f"Click error: {click_err}")
-                    return
-
-                # Initial click delay: a one-time pause right after the
-                # FIRST click. After this fires we set the flag and
-                # never apply the delay between subsequent clicks —
-                # those follow the normal 1/cps cadence.
-                if (
-                    delay_on
-                    and delay > 0
-                    and not initial_delay_done
-                    and not self.stop_requested
-                ):
-                    self._set_status(
-                        f"Initial delay: pausing for {delay:g}s…"
-                    )
-                    if not self._interruptible_sleep(delay, x, y, click_count):
+                    last_repeat_time = time.time()
+                    if not self._interruptible_sleep(
+                        interval, x, y, click_count
+                    ):
                         return
-                    initial_delay_done = True
-
-                # Sleep for the normal CPS interval. _interruptible_sleep
-                # returns False if the user clicked Stop OR if the
-                # mouse drifted too far from the target.
-                if not self._interruptible_sleep(interval, x, y, click_count):
-                    return
-
-                # Periodic longer pause: every `repeat` seconds, the
-                # clicking pauses for `delay` seconds. Measured from
-                # the start of the run / end of the last periodic
-                # pause, so the timing is "once every N seconds"
-                # rather than "N seconds after the last click".
-                if repeat_on and repeat > 0 and delay > 0 and not self.stop_requested:
-                    if time.time() - last_repeat_time >= repeat:
-                        self._set_status(
-                            f"Pausing for {delay:g}s (repeat)…"
-                        )
-                        if not self._interruptible_sleep(
-                            delay, x, y, click_count
-                        ):
-                            return
-                        last_repeat_time = time.time()
         except Exception as e:
             self.root.after(0, self._hide_countdown_ui)
             self._set_status(f"Error: {e}")
@@ -686,6 +674,46 @@ class MouseClicker:
             self.running = False
             self.busy = False
             self.root.after(0, self._update_buttons)
+
+    def _perform_click(
+        self, x: int, y: int, hold_duration: float, click_count: int
+    ) -> bool:
+        """Click the target, optionally holding the button down.
+
+        A held click is always released, including when Stop is pressed or
+        the auto-stop detects that the cursor moved away during the hold.
+        """
+        mouse_is_down = False
+        try:
+            # Move before every action so the cursor is at the target before
+            # the distance check in _interruptible_sleep runs.
+            pyautogui.moveTo(x, y)
+            if hold_duration > 0:
+                self._set_status(
+                    f"Holding click for {hold_duration:g}s…"
+                )
+                pyautogui.mouseDown()
+                mouse_is_down = True
+                if not self._interruptible_sleep(
+                    hold_duration, x, y, click_count
+                ):
+                    return False
+                pyautogui.mouseUp()
+                mouse_is_down = False
+            else:
+                pyautogui.click()
+            return True
+        except Exception as click_err:
+            self._set_status(f"Click error: {click_err}")
+            return False
+        finally:
+            # Never leave the user's mouse button stuck down if an error or
+            # a stop request interrupts the hold.
+            if mouse_is_down:
+                try:
+                    pyautogui.mouseUp()
+                except Exception as release_err:
+                    self._set_status(f"Mouse release error: {release_err}")
 
     # ------------------------------------------------- Stop
     def _request_stop(self) -> None:
@@ -702,9 +730,9 @@ class MouseClicker:
 
         On every slice, polls the current mouse position and trips the
         stop condition if the cursor has moved more than STOP_DISTANCE
-        pixels from the target — the same auto-stop the main click
-        loop uses. This means delay / repeat pauses are also
-        cancellable by the user moving the mouse away.
+        pixels from the target — the same auto-stop the main click loop
+        uses. This means click-hold durations and repeat holds are also
+        cancellable by moving the mouse away.
 
         Returns True if the full sleep completed, False if it was cut
         short (either by Stop being pressed, or by the auto-stop).

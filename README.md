@@ -17,11 +17,11 @@ left-clicks at a fixed position.
 │   Clicks per second (0.1 – 10):    │
 │   [2.0]                            │
 ├────────────────────────────────────┤
-│ Delay                              │
-│   [ ] Enable initial click delay   │
-│   Initial click delay (seconds):   │
+│ Click Hold                         │
+│   [ ] Enable initial click hold    │
+│   Hold duration (seconds):         │
 │   [1.0]                            │
-│   [ ] Repeat delay periodically    │
+│   [ ] Repeat hold periodically    │
 │   Repeat every (seconds): [5]      │
 ├────────────────────────────────────┤
 │   [▶  Start]      [■  Stop]        │
@@ -91,16 +91,17 @@ Wayland is **not** supported — log into an X11 session first.
   `mouseclicker_config.json` (auto-reloaded on next launch).
 - **Click speed** — accepts `0.1` – `10` clicks per second (`0.1` = 1 click
   every 10 s, `5` = 5 clicks per second).
-- **Delay** — optional. When **Enable initial click delay** is checked, the
-  clicker does ONE click, then pauses for *Initial click delay (seconds)*,
-  and only then starts clicking at the configured CPS rate. The delay is
-  a one-time initial pause, not a pause between every click.
-- **Repeat delay** — optional, independent of the initial delay. When
-  **Repeat delay periodically** is checked, the clicking pauses for the
-  configured delay once every *Repeat every (seconds)*. With
-  *Initial click delay* = 1 s and *Repeat every* = 5 s, the loop clicks
-  once, pauses 1 s, clicks normally for ~4 s, then pauses 1 s again,
-  repeating.
+- **Click hold** — optional. When **Enable initial click hold** is checked,
+  the first click presses and holds the primary mouse button for the
+  configured *Hold duration (seconds)*, then releases it and continues
+  clicking at the configured CPS rate. A duration of zero behaves like a
+  normal click.
+- **Repeat click hold** — optional and independent of the initial hold. When
+  **Repeat click hold periodically** is checked, the clicker presses and
+  holds the button for the configured duration once every *Repeat every
+  (seconds)*, then resumes the normal CPS cadence. With a 1-second hold and
+  a 5-second repeat interval, it starts with a 1-second held click and
+  performs another held click every 5 seconds.
 - **Start** — a second 5-second countdown (cancellable with **Stop**) then
   moves the mouse to the saved position and clicks the primary mouse button
   in an infinite loop at the configured rate.
@@ -165,10 +166,10 @@ without using the capture button.
 | **Set Mouse Position (5s)** | 5 s countdown, then captures the current cursor position into X/Y. |
 | **Save Position** | Writes X, Y and click speed to `mouseclicker_config.json`. |
 | Click speed (entry) | Clicks per second; accepts `0.1` – `10`. |
-| **Enable initial click delay** (checkbox) | After the first click, pause for *Initial click delay* seconds before resuming the normal CPS cadence. One-time only. |
-| Initial click delay (entry) | Seconds of the one-time initial pause; accepts `0` – `3600`. |
-| **Repeat delay periodically** (checkbox) | Once every *Repeat every* seconds, the clicking pauses for *Delay* seconds. |
-| Repeat every (entry) | Period (seconds) of the periodic pause; accepts `0.1` – `3600`. |
+| **Enable initial click hold** (checkbox) | On the first click, hold the button for *Hold duration* seconds, then resume the normal CPS cadence. One-time only. |
+| Hold duration (entry) | How long the initial (and any repeated) click is held; accepts `0` – `3600` seconds. |
+| **Repeat click hold periodically** (checkbox) | Once every *Repeat every* seconds, hold an additional click for the configured duration. |
+| Repeat every (entry) | Period (seconds) between repeated held clicks; accepts `0.1` – `3600`. |
 | **▶ Start** | 5 s cancellable countdown, then clicks in an infinite loop. |
 | **■ Stop** | Cancels the start countdown or stops the click loop. |
 | Always on top (checkbox) | Keeps the window above other windows. |
@@ -190,8 +191,9 @@ without using the capture button.
 ```
 
 The `delay_enabled` / `delay` / `repeat_enabled` / `repeat` keys are
-optional. Older config files (with only `x` / `y` / `cps`) still load
-cleanly — the new fields default to off / `1.0` / off / `5.0`.
+optional. `delay` stores the click-hold duration in seconds. Older config
+files (with only `x` / `y` / `cps`) still load cleanly — the new fields
+default to off / `1.0` / off / `5.0`.
 
 You can edit it in any text editor while the app is closed; it will be
 reloaded on the next launch.
