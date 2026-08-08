@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""
+Mouse Clicker - A simple GUI auto-clicker.
+
+Features:
+  * "Set Mouse Position" with a 5-second countdown so you can move the mouse
+    where you want it before the position is captured.
+  * X/Y coordinates are editable in the GUI.
+  * "Save Position" persists X, Y and click-speed to a JSON config file that
+    is reloaded automatically on startup.
+  * Click speed: 0.1 - 10 clicks per second (0.1 = 1 click every 10 s).
+  * "Start" runs another 5-second countdown (cancellable) then clicks the
+    primary mouse button in an infinite loop at the saved position.
+  * The loop auto-stops if the mouse is moved more than 50 px from the target.
+  * "Stop" halts both the start countdown and the click loop.
+  * "Always on top" checkbox keeps the window above other windows.
+"""
+
+import json
+import os
+import threading
+import time
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+try:
+    import pyautogui
+
+    pyautogui.FAILSAFE = False  # we have our own stop mechanism
+except ImportError:
+    pyautogui = None
+
+CONFIG_FILE = "mouseclicker_config.json"
+COUNTDOWN_SECONDS = 5
+STOP_DISTANCE = 50  # pixels - mouse movement threshold
+POLL_INTERVAL = 0.02  # responsiveness slice for stop checking
+
+
+class MouseClicker:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("Mouse Clicker")
+        self.root.geometry("380x360")
+        self.root.resizable(False, False)
+
+        # --- state ---
+        self.click_x = tk.IntVar(value=0)
+        self.click_y = tk.IntVar(value=0)
+        self.cps = tk.DoubleVar(value=1.0)
+        self.always_on_top = tk.BooleanVar(value=False)
+
+        self.busy = False  # True while counting down or clicking
+        self.running = False  # True only while actively clicking
+        self.stop_requested = False
+
+        self._build_ui()
+        self._load_config()
+
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------------ UI
+    def _build_ui(self) -> None:
+        # Always on top
+        top = ttk.Frame(self.root, padding=(10, 8, 10, 0))
+        top.pack(fill="x")
+        ttk.Checkbutton(
+            top,
+            text="Always on top",
+            variable=self.always_on_top,
+            command=self._toggle_always_on_top,
+        ).pack(anchor="w")
+
+        # Position section
+        pos = ttk.LabelFrame(self.root, text="Mouse Position", padding=10)
+        pos.pack(fill="x", padx=10, pady=8)
+        pos.columnconfigure(1, weight=1)
+        pos.columnconfigure(3, weight=1)
+
+        ttk.Label(pos, text="X:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ttk.Entry(pos, textvariable=self.click_x, width=10).grid(
+            row=0, column=1, sticky="w"
+        )
+        ttk.Label(pos, text="Y:").grid(row=0, column=2, sticky="w", padx=(10, 4))
+        ttk.Entry(pos, textvariable=self.click_y, width=10).grid(
+            row=0, column=3, sticky="w"
+        )
+
+        ttk.Button(
+            pos, text="Set Mouse Position (5s)", command=self._start_set_position
+        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(8, 4))
+        ttk.Button(pos, text="Save Position", command=self._save_position).grid(
+            row=2, column=0, columnspan=4, sticky="ew"
+        )
+
+        # Speed section
+        speed = ttk.LabelFrame(self.root, text="Click Speed", padding=10)
+        speed.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(speed, text="Clicks per second (0.1 – 10):").pack(anchor="w")
+        vcmd = (self.root.register(self._validate_cps_input), "%P")
+        ttk.Entry(
+            speed,
+            textvariable=self.cps,
+            width=10,
+            validate="key",
+            validatecommand=vcmd,
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Controls
+        ctrl = ttk.Frame(self.root, padding=(10, 0, 10, 0))
+        ctrl.pack(fill="x")
+        self.start_btn = ttk.Button(
+            ctrl, text="▶  Start", command=self._start_clicking, width=12
+        )
+        self.start_btn.pack(side="left", padx=(0, 6))
+        self.stop_btn = ttk.Button(
+            ctrl,
+            text="■  Stop",
+            command=self._request_stop,
+            state="disabled",
+            width=12,
+        )
+        self.stop_btn.pack(side="left")
+
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready.")
+        bar = ttk.Frame(self.root, padding=(10, 8, 10, 8))
+        bar.pack(fill="x", side="bottom")
+        ttk.Label(
+            bar,
+            textvariable=self.status_var,
+            relief="sunken",
+            padding=6,
+            anchor="w",
+        ).pack(fill="x")
+
+    # ------------------------------------------------- Always on top
+    def _toggle_always_on_top(self) -> None:
+        self.root.attributes("-topmost", self.always_on_top.get())
+
+    # ------------------------------------------------- Set position
+    def _start_set_position(self) -> None:
+        if self.busy:
+            return
+        if pyautogui is None:
+            messagebox.showerror(
+                "Missing dependency",
+                "pyautogui is not installed.\n\nRun:\n    pip install pyautogui",
+            )
+            return
+        self.busy = True
+        self.stop_requested = False
+        self._update_buttons()
+        threading.Thread(target=self._set_position_countdown, daemon=True).start()
+
+    def _set_position_countdown(self) -> None:
+        try:
+            for i in range(COUNTDOWN_SECONDS, 0, -1):
+                if self.stop_requested:
+                    self._set_status("Position capture cancelled.")
+                    return
+                self._set_status(f"Move mouse to position… capturing in {i}s")
+                time.sleep(1)
+            x, y = pyautogui.position()
+            self.click_x.set(x)
+            self.click_y.set(y)
+            self._set_status(f"Position captured: ({x}, {y})")
+        except Exception as e:
+            self._set_status(f"Error: {e}")
+        finally:
+            self.busy = False
+            self.root.after(0, self._update_buttons)
+
+    # ------------------------------------------------- Save / load
+    def _save_position(self) -> None:
+        try:
+            x = int(self.click_x.get())
+            y = int(self.click_y.get())
+        except (ValueError, tk.TclError):
+            messagebox.showerror("Invalid input", "X and Y must be integers.")
+            return
+        cps = self._get_cps()
+        if cps is None:
+            messagebox.showerror(
+                "Invalid input", "Click speed must be a number between 0.1 and 10."
+            )
+            return
+        config = {"x": x, "y": y, "cps": cps}
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(config, f, indent=2)
+            self._set_status(f"Saved position ({x}, {y}) → {CONFIG_FILE}")
+        except OSError as e:
+            messagebox.showerror("Save failed", str(e))
+
+    def _load_config(self) -> None:
+        if not os.path.exists(CONFIG_FILE):
+            return
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                config = json.load(f)
+            self.click_x.set(int(config.get("x", 0)))
+            self.click_y.set(int(config.get("y", 0)))
+            cps = float(config.get("cps", 1.0))
+            cps = max(0.1, min(10.0, cps))
+            self.cps.set(cps)
+            self._set_status(f"Loaded config from {CONFIG_FILE}")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            self._set_status(f"Could not load config: {e}")
+
+    # ------------------------------------------------- Validation
+    def _validate_cps_input(self, proposed: str) -> bool:
+        if proposed == "":
+            return True
+        try:
+            v = float(proposed)
+        except ValueError:
+            return False
+        return 0.1 <= v <= 10.0
+
+    def _get_cps(self):
+        try:
+            v = float(self.cps.get())
+        except (ValueError, tk.TclError):
+            return None
+        if not (0.1 <= v <= 10.0):
+            return None
+        return v
+
+    # ------------------------------------------------- Click loop
+    def _start_clicking(self) -> None:
+        if self.busy:
+            return
+        if pyautogui is None:
+            messagebox.showerror(
+                "Missing dependency",
+                "pyautogui is not installed.\n\nRun:\n    pip install pyautogui",
+            )
+            return
+        cps = self._get_cps()
+        if cps is None:
+            messagebox.showerror(
+                "Invalid click speed",
+                "Click speed must be a number between 0.1 and 10.",
+            )
+            return
+        try:
+            x = int(self.click_x.get())
+            y = int(self.click_y.get())
+        except (ValueError, tk.TclError):
+            messagebox.showerror("Invalid position", "X and Y must be integers.")
+            return
+
+        self.busy = True
+        self.stop_requested = False
+        self._update_buttons()
+        threading.Thread(
+            target=self._countdown_then_click,
+            args=(x, y, cps),
+            daemon=True,
+        ).start()
+
+    def _countdown_then_click(self, x: int, y: int, cps: float) -> None:
+        try:
+            # --- 5 s start countdown ---
+            for i in range(COUNTDOWN_SECONDS, 0, -1):
+                if self.stop_requested:
+                    self._set_status("Start cancelled.")
+                    return
+                self._set_status(f"Starting in {i}s — press Stop to cancel")
+                time.sleep(1)
+            if self.stop_requested:
+                self._set_status("Start cancelled.")
+                return
+
+            # --- infinite click loop ---
+            self.running = True
+            interval = 1.0 / cps
+            self._set_status(
+                f"Clicking at ({x}, {y}) @ {cps} cps — move mouse >{STOP_DISTANCE}px to stop"
+            )
+
+            while not self.stop_requested:
+                # Detect user movement BEFORE we move the mouse back
+                cx, cy = pyautogui.position()
+                dist = ((cx - x) ** 2 + (cy - y) ** 2) ** 0.5
+                if dist > STOP_DISTANCE:
+                    self._set_status(
+                        f"Stopped — mouse moved {dist:.0f} px from target"
+                    )
+                    return
+
+                pyautogui.click(x, y, button="left")
+
+                # Sleep in small slices so Stop stays responsive
+                slept = 0.0
+                while slept < interval and not self.stop_requested:
+                    time.sleep(min(POLL_INTERVAL, interval - slept))
+                    slept += POLL_INTERVAL
+        except Exception as e:
+            self._set_status(f"Error: {e}")
+        finally:
+            self.running = False
+            self.busy = False
+            self.root.after(0, self._update_buttons)
+
+    # ------------------------------------------------- Stop
+    def _request_stop(self) -> None:
+        if not self.busy:
+            return
+        self.stop_requested = True
+        self._set_status("Stopping…")
+
+    # ------------------------------------------------- Helpers
+    def _update_buttons(self) -> None:
+        if self.busy:
+            self.start_btn.config(state="disabled")
+            self.stop_btn.config(state="normal")
+        else:
+            self.start_btn.config(state="normal")
+            self.stop_btn.config(state="disabled")
+
+    def _set_status(self, msg: str) -> None:
+        self.root.after(0, lambda: self.status_var.set(msg))
+
+    def _on_close(self) -> None:
+        if self.busy:
+            if not messagebox.askokcancel(
+                "Quit", "Clicker is running. Quit anyway?"
+            ):
+                return
+        self.stop_requested = True
+        self._save_position()
+        self.root.destroy()
+
+
+def main() -> None:
+    if pyautogui is None:
+        # Minimal error window so the user can see what's wrong
+        root = tk.Tk()
+        root.title("Mouse Clicker")
+        ttk.Label(
+            root,
+            text="pyautogui is not installed.\n\nRun:    pip install pyautogui",
+            padding=20,
+            justify="center",
+        ).pack()
+        ttk.Button(root, text="OK", command=root.destroy).pack(pady=(0, 12))
+        root.mainloop()
+        return
+
+    root = tk.Tk()
+    MouseClicker(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
