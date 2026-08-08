@@ -9,10 +9,11 @@ Features:
   * "Save Position" persists X, Y, click-speed and the delay settings to a
     JSON config file that is reloaded automatically on startup.
   * Click speed: 0.1 - 10 clicks per second (0.1 = 1 click every 10 s).
-  * Delay feature: optionally insert a configurable pause between every
-    click, and (separately) optionally repeat that pause once every N
-    seconds. Both sub-features are independent of each other and of the
-    normal CPS rate.
+  * Delay feature: optionally insert a one-time initial pause after the
+    first click before the normal CPS cadence kicks in, and (separately)
+    optionally repeat that same pause once every N seconds. Both
+    sub-features are independent of each other and of the normal CPS
+    rate.
   * "Start" runs another 5-second countdown (cancellable) then clicks the
     primary mouse button in an infinite loop at the saved position.
   * The loop auto-stops if the mouse is moved more than 50 px from the target.
@@ -91,8 +92,10 @@ class MouseClicker:
         self.click_count_var = tk.StringVar(value="Clicks: 0")
 
         # --- delay feature ---
-        # delay_enabled: when True, an extra pause of `delay_value` seconds
-        #   is added between every click (on top of the 1/cps interval).
+        # delay_enabled: when True, the clicker does ONE click, then
+        #   pauses for `delay_value` seconds, and only THEN starts
+        #   clicking at the normal CPS rate. The delay is a one-time
+        #   initial pause, not a pause between every click.
         # repeat_enabled: when True, every `repeat_value` seconds the
         #   clicking pauses for `delay_value` seconds.
         self.delay_enabled = tk.BooleanVar(value=False)
@@ -184,13 +187,13 @@ class MouseClicker:
         delay_frame.pack(fill="x", padx=10, pady=(0, 8))
         ttk.Checkbutton(
             delay_frame,
-            text="Enable delay between clicks",
+            text="Enable initial click delay",
             variable=self.delay_enabled,
         ).pack(anchor="w")
 
         delay_row = ttk.Frame(delay_frame)
         delay_row.pack(fill="x", anchor="w", pady=(4, 0))
-        ttk.Label(delay_row, text="Delay (seconds):").pack(side="left")
+        ttk.Label(delay_row, text="Initial click delay (seconds):").pack(side="left")
         delay_vcmd = (self.root.register(self._validate_delay_input), "%P")
         ttk.Entry(
             delay_row,
@@ -512,15 +515,16 @@ class MouseClicker:
         # Validate the delay inputs only if the corresponding feature
         # is enabled. The repeat checkbox consumes the same *delay*
         # value, so we need to validate it whenever either feature is
-        # on — even if "Enable delay between clicks" is off but
+        # on — even if "Enable initial click delay" is off but
         # "Repeat delay periodically" is on.
         delay = 0.0
         if self.delay_enabled.get() or self.repeat_enabled.get():
             delay = self._get_delay_value()
             if delay is None:
                 messagebox.showerror(
-                    "Invalid delay",
-                    "Delay must be a number between 0 and 3600 seconds.",
+                    "Invalid initial click delay",
+                    "Initial click delay must be a number between 0 and 3600 "
+                    "seconds.",
                 )
                 return
         repeat = 0.0
@@ -586,6 +590,12 @@ class MouseClicker:
             # mid-click in a confusing way).
             delay_on = bool(self.delay_enabled.get())
             repeat_on = bool(self.repeat_enabled.get())
+            # The initial click delay is a one-time pause that fires
+            # immediately after the FIRST click, before the loop
+            # settles into the normal CPS cadence. After it has fired
+            # once, this flag stays True for the rest of the run so we
+            # never re-insert the delay between subsequent clicks.
+            initial_delay_done = False
             # The repeat pause is measured from the start of the run
             # (or from the end of the last periodic pause). This makes
             # the timing predictable: "every N seconds, pause once".
@@ -631,18 +641,28 @@ class MouseClicker:
                     self._set_status(f"Click error: {click_err}")
                     return
 
+                # Initial click delay: a one-time pause right after the
+                # FIRST click. After this fires we set the flag and
+                # never apply the delay between subsequent clicks —
+                # those follow the normal 1/cps cadence.
+                if (
+                    delay_on
+                    and delay > 0
+                    and not initial_delay_done
+                    and not self.stop_requested
+                ):
+                    self._set_status(
+                        f"Initial delay: pausing for {delay:g}s…"
+                    )
+                    if not self._interruptible_sleep(delay, x, y, click_count):
+                        return
+                    initial_delay_done = True
+
                 # Sleep for the normal CPS interval. _interruptible_sleep
                 # returns False if the user clicked Stop OR if the
                 # mouse drifted too far from the target.
                 if not self._interruptible_sleep(interval, x, y, click_count):
                     return
-
-                # Extra pause between every click when the delay
-                # feature is on. delay==0 (the feature being on but
-                # the value being 0) is treated as a no-op.
-                if delay_on and delay > 0 and not self.stop_requested:
-                    if not self._interruptible_sleep(delay, x, y, click_count):
-                        return
 
                 # Periodic longer pause: every `repeat` seconds, the
                 # clicking pauses for `delay` seconds. Measured from

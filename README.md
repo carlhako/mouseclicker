@@ -18,8 +18,9 @@ left-clicks at a fixed position.
 │   [2.0]                            │
 ├────────────────────────────────────┤
 │ Delay                              │
-│   [ ] Enable delay between clicks  │
-│   Delay (seconds): [1.0]           │
+│   [ ] Enable initial click delay   │
+│   Initial click delay (seconds):   │
+│   [1.0]                            │
 │   [ ] Repeat delay periodically    │
 │   Repeat every (seconds): [5]      │
 ├────────────────────────────────────┤
@@ -90,14 +91,16 @@ Wayland is **not** supported — log into an X11 session first.
   `mouseclicker_config.json` (auto-reloaded on next launch).
 - **Click speed** — accepts `0.1` – `10` clicks per second (`0.1` = 1 click
   every 10 s, `5` = 5 clicks per second).
-- **Delay** — optional. When **Enable delay between clicks** is checked, an
-  extra pause of *Delay (seconds)* is inserted between every click (on top
-  of the 1/cps interval). So at 2 cps with a 1 s delay, the effective
-  cadence is one click every 1.5 s.
-- **Repeat delay** — optional, layered on top of Delay. When **Repeat delay
-  periodically** is checked, the clicking pauses for the configured delay
-  once every *Repeat every (seconds)*. With *Delay* = 1 s and *Repeat every*
-  = 5 s, the loop clicks normally for 5 s, then pauses 1 s, then repeats.
+- **Delay** — optional. When **Enable initial click delay** is checked, the
+  clicker does ONE click, then pauses for *Initial click delay (seconds)*,
+  and only then starts clicking at the configured CPS rate. The delay is
+  a one-time initial pause, not a pause between every click.
+- **Repeat delay** — optional, independent of the initial delay. When
+  **Repeat delay periodically** is checked, the clicking pauses for the
+  configured delay once every *Repeat every (seconds)*. With
+  *Initial click delay* = 1 s and *Repeat every* = 5 s, the loop clicks
+  once, pauses 1 s, clicks normally for ~4 s, then pauses 1 s again,
+  repeating.
 - **Start** — a second 5-second countdown (cancellable with **Stop**) then
   moves the mouse to the saved position and clicks the primary mouse button
   in an infinite loop at the configured rate.
@@ -162,8 +165,8 @@ without using the capture button.
 | **Set Mouse Position (5s)** | 5 s countdown, then captures the current cursor position into X/Y. |
 | **Save Position** | Writes X, Y and click speed to `mouseclicker_config.json`. |
 | Click speed (entry) | Clicks per second; accepts `0.1` – `10`. |
-| **Enable delay between clicks** (checkbox) | Adds *Delay* seconds to every click. |
-| Delay (entry) | Seconds of extra pause between every click; accepts `0` – `3600`. |
+| **Enable initial click delay** (checkbox) | After the first click, pause for *Initial click delay* seconds before resuming the normal CPS cadence. One-time only. |
+| Initial click delay (entry) | Seconds of the one-time initial pause; accepts `0` – `3600`. |
 | **Repeat delay periodically** (checkbox) | Once every *Repeat every* seconds, the clicking pauses for *Delay* seconds. |
 | Repeat every (entry) | Period (seconds) of the periodic pause; accepts `0.1` – `3600`. |
 | **▶ Start** | 5 s cancellable countdown, then clicks in an infinite loop. |
