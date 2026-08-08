@@ -83,6 +83,7 @@ class MouseClicker:
         self.click_y = tk.IntVar(value=0)
         self.cps = tk.DoubleVar(value=1.0)
         self.always_on_top = tk.BooleanVar(value=False)
+        self.click_count_var = tk.StringVar(value="Clicks: 0")
 
         self.busy = False  # True while counting down or clicking
         self.running = False  # True only while actively clicking
@@ -157,6 +158,15 @@ class MouseClicker:
             validate="key",
             validatecommand=vcmd,
         ).pack(anchor="w", pady=(4, 0))
+
+        # Statistics section (shows live click count while running)
+        stats = ttk.LabelFrame(self.root, text="Statistics", padding=10)
+        stats.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(
+            stats,
+            textvariable=self.click_count_var,
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w")
 
         # --- Countdown panel ---
         # Built here but only packed into the layout while a countdown is
@@ -297,13 +307,30 @@ class MouseClicker:
 
     # ------------------------------------------------- Validation
     def _validate_cps_input(self, proposed: str) -> bool:
+        # Be permissive while the user is still typing. tkinter's
+        # validate="key" fires on every keystroke, so strict checks
+        # (e.g. requiring the value to already be in [0.1, 10]) block
+        # the user from ever entering values like "0.5" — typing "0"
+        # gets rejected, and then they can't continue.
         if proposed == "":
             return True
+        # A lone "." is a valid prefix (the user is about to type ".5").
+        if proposed == ".":
+            return True
+        # Only digits and at most one decimal point.
+        if any(c not in "0123456789." for c in proposed):
+            return False
+        if proposed.count(".") > 1:
+            return False
         try:
             v = float(proposed)
         except ValueError:
             return False
-        return 0.1 <= v <= 10.0
+        # Permit any partial value in [0, 10] so the user can type
+        # things like "0", "0.", "0.5" while they are still typing.
+        # The final value must still be in [0.1, 10]; that check
+        # happens in _get_cps() when Start is pressed.
+        return 0.0 <= v <= 10.0
 
     def _get_cps(self):
         try:
@@ -340,6 +367,7 @@ class MouseClicker:
 
         self.busy = True
         self.stop_requested = False
+        self.click_count_var.set("Clicks: 0")
         self._update_buttons()
         threading.Thread(
             target=self._countdown_then_click,
@@ -380,14 +408,38 @@ class MouseClicker:
                 f"move mouse >{STOP_DISTANCE}px to stop"
             )
 
+            # Move the cursor to the target with a brief animation so
+            # the user can visibly see the mouse jump to the position
+            # before clicking starts.
+            try:
+                pyautogui.moveTo(x, y, duration=0.3)
+            except Exception as move_err:
+                self._set_status(f"Move error: {move_err}")
+                return
+
             while not self.stop_requested:
-                # Click FIRST so pyautogui moves the mouse back to the target.
-                # If we checked distance before the first click, the cursor
-                # would still be parked on the Start button and the loop
-                # would auto-stop immediately on iteration 1.
+                # Move + click FIRST so the cursor is parked on the
+                # target before any distance check below. If we
+                # checked distance first, the cursor would still be
+                # wherever the user last left it (e.g. on the Stop
+                # button) and the loop would auto-stop on iteration 1.
+                # Splitting moveTo() and click() (instead of just
+                # click(x, y)) makes it explicit that the cursor is
+                # moved to the target on every iteration.
                 try:
-                    pyautogui.click(x, y, button="left")
+                    pyautogui.moveTo(x, y)
+                    pyautogui.click()
                     click_count += 1
+                    # Update the on-screen counter on the main thread.
+                    # The default-argument trick freezes the current
+                    # click_count into the lambda — without it, every
+                    # queued callback would see the loop's final value.
+                    self.root.after(
+                        0,
+                        lambda c=click_count: self.click_count_var.set(
+                            f"Clicks: {c}"
+                        ),
+                    )
                 except Exception as click_err:
                     self._set_status(f"Click error: {click_err}")
                     return
@@ -430,11 +482,19 @@ class MouseClicker:
     # ------------------------------------------------- Helpers
     def _update_buttons(self) -> None:
         if self.busy:
-            self.start_btn.config(state="disabled")
-            self.stop_btn.config(state="normal")
+            # Hide the start button entirely so the user can't
+            # accidentally re-trigger it. Show only the stop button,
+            # expanded to fill the row with prominent text so it's
+            # obvious how to cancel.
+            self.start_btn.pack_forget()
+            self.stop_btn.pack(side="left", fill="x", expand=True)
+            self.stop_btn.config(state="normal", text="■  STOP — Cancel clicking")
         else:
-            self.start_btn.config(state="normal")
-            self.stop_btn.config(state="disabled")
+            # Restore both buttons in their normal positions.
+            self.start_btn.pack(side="left", padx=(0, 6))
+            self.start_btn.config(state="normal", text="▶  Start")
+            self.stop_btn.pack(side="left")
+            self.stop_btn.config(state="disabled", text="■  Stop")
 
     def _set_status(self, msg: str) -> None:
         self.root.after(0, lambda: self.status_var.set(msg))
